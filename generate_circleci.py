@@ -11,18 +11,19 @@ import io
 import sys
 import time
 import struct
+import argparse
 import urllib.request
 import subprocess
 import multiprocessing
 import threading
 from typing import Tuple, Generator
 
-GAMES_TO_SKIP = 530000
-MAX_GAMES = 50000
-DEPTH = 10
-NUM_WORKERS = 2  # 2 vCPU on CircleCI medium
-HASH_PER_WORKER = 64
-OUTPUT_FILE = "/tmp/v5_dataset_530k_580k.bin"
+DEFAULT_GAMES_TO_SKIP = 530000
+DEFAULT_MAX_GAMES = 50000
+DEFAULT_DEPTH = 10
+DEFAULT_NUM_WORKERS = max(2, multiprocessing.cpu_count())
+DEFAULT_HASH_PER_WORKER = 64
+DEFAULT_OUTPUT_FILE = "/tmp/v5_dataset_530k_580k.bin"
 STOCKFISH_BIN = "/usr/games/stockfish"
 LICHESS_URL = "https://database.lichess.org/standard/lichess_db_standard_rated_2015-10.pgn.zst"
 LOCAL_PGN = "/tmp/lichess_db_standard_rated_2015-10.pgn.zst"
@@ -160,40 +161,57 @@ def game_generator(stream_file, games_to_skip: int, max_games: int) -> Generator
             yield "".join(current_lines)
 
 def main():
+    parser = argparse.ArgumentParser(description="Cloud Chess Dataset Generator")
+    parser.add_argument("--skip-games", type=int, default=DEFAULT_GAMES_TO_SKIP, help="Number of games to skip from start of PGN")
+    parser.add_argument("--max-games", type=int, default=DEFAULT_MAX_GAMES, help="Number of games to process")
+    parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT_FILE, help="Path to output .bin file")
+    parser.add_argument("--workers", type=int, default=DEFAULT_NUM_WORKERS, help="Number of parallel Stockfish workers")
+    parser.add_argument("--depth", type=int, default=DEFAULT_DEPTH, help="Stockfish search depth")
+    parser.add_argument("--hash", type=int, default=DEFAULT_HASH_PER_WORKER, help="Hash size in MB per worker")
+    args = parser.parse_args()
+
+    games_to_skip = args.skip_games
+    max_games = args.max_games
+    output_file = args.output
+    num_workers = args.workers
+    depth = args.depth
+    hash_mb = args.hash
+
     print("=" * 65, flush=True)
-    print(f"CIRCLECI CHESS DATASET GENERATOR (530k -> 580k)", flush=True)
+    print(f"CHESS DATASET GENERATOR ({games_to_skip:,} -> {games_to_skip+max_games:,})", flush=True)
     print("=" * 65, flush=True)
 
     engine_bin = setup_stockfish()
     pgn_path = setup_pgn()
 
     print(f"\nConfiguration:")
-    print(f"  Games to Skip:    {GAMES_TO_SKIP:,} (Game {GAMES_TO_SKIP+1:,} -> {GAMES_TO_SKIP+MAX_GAMES:,})")
-    print(f"  Target Games:     {MAX_GAMES:,}")
-    print(f"  Engine Depth:     {DEPTH}")
+    print(f"  Games to Skip:    {games_to_skip:,} (Game {games_to_skip+1:,} -> {games_to_skip+max_games:,})")
+    print(f"  Target Games:     {max_games:,}")
+    print(f"  Engine Depth:     {depth}")
     print(f"  Engine Binary:    {engine_bin}")
-    print(f"  Workers:          {NUM_WORKERS} parallel Stockfish instances")
-    print(f"  Output Path:      {OUTPUT_FILE}")
+    print(f"  Workers:          {num_workers} parallel Stockfish instances")
+    print(f"  Hash per Worker:  {hash_mb} MB")
+    print(f"  Output Path:      {output_file}")
     print("=" * 65, flush=True)
 
     stream = open_pgn_stream(pgn_path)
-    games_iter = game_generator(stream, GAMES_TO_SKIP, MAX_GAMES)
+    games_iter = game_generator(stream, games_to_skip, max_games)
 
-    print(f"[Pool] Spawning {NUM_WORKERS} Stockfish processes...", flush=True)
+    print(f"[Pool] Spawning {num_workers} Stockfish processes...", flush=True)
     pool = multiprocessing.Pool(
-        processes=NUM_WORKERS,
+        processes=num_workers,
         initializer=worker_init,
-        initargs=(engine_bin, HASH_PER_WORKER, DEPTH)
+        initargs=(engine_bin, hash_mb, depth)
     )
 
-    MAX_QUEUE = NUM_WORKERS * 4
+    MAX_QUEUE = num_workers * 4
     semaphore = threading.Semaphore(MAX_QUEUE)
     write_lock = threading.Lock()
 
     total_games_done = 0
     total_positions_packed = 0
-    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
-    bin_file = open(OUTPUT_FILE, "wb")
+    os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
+    bin_file = open(output_file, "wb")
     start_time = time.time()
 
     def result_callback(packed_bytes: bytes):
@@ -204,14 +222,14 @@ def main():
                 total_positions_packed += len(packed_bytes) // 38
         with write_lock:
             total_games_done += 1
-            if total_games_done % 200 == 0 or total_games_done == MAX_GAMES:
+            if total_games_done % 200 == 0 or total_games_done == max_games:
                 elapsed = time.time() - start_time
                 speed_games = total_games_done / max(elapsed, 0.1)
                 speed_pos = total_positions_packed / max(elapsed, 0.1)
-                eta_m = (MAX_GAMES - total_games_done) / speed_games / 60 if speed_games > 0 else 0
-                file_mb = os.path.getsize(OUTPUT_FILE) / (1024 ** 2)
+                eta_m = (max_games - total_games_done) / speed_games / 60 if speed_games > 0 else 0
+                file_mb = os.path.getsize(output_file) / (1024 ** 2)
                 print(
-                    f"[{total_games_done:,}/{MAX_GAMES:,} games] "
+                    f"[{total_games_done:,}/{max_games:,} games] "
                     f"Packed: {total_positions_packed:,} pos ({file_mb:.1f} MB) "
                     f"| Speed: {speed_games:.1f} g/s ({speed_pos:.0f} pos/s) "
                     f"| Elapsed: {elapsed/60:.1f}m | ETA: {eta_m:.1f}m",
@@ -228,7 +246,7 @@ def main():
         semaphore.acquire()
         pool.apply_async(worker_task, (game_pgn,), callback=result_callback, error_callback=error_callback)
 
-    while total_games_done < MAX_GAMES:
+    while total_games_done < max_games:
         time.sleep(0.5)
 
     pool.terminate()
@@ -242,16 +260,17 @@ def main():
         except Exception: pass
 
     total_time = time.time() - start_time
-    final_mb = os.path.getsize(OUTPUT_FILE) / (1024 ** 2)
+    final_mb = os.path.getsize(output_file) / (1024 ** 2)
 
     print("\n" + "=" * 65, flush=True)
-    print("CIRCLECI DATASET GENERATION COMPLETED!", flush=True)
+    print("DATASET GENERATION COMPLETED!", flush=True)
     print(f"  Total Games Processed:   {total_games_done:,}")
     print(f"  Total Positions Packed:  {total_positions_packed:,}")
     print(f"  Output File Size:        {final_mb:.2f} MB")
     print(f"  Total Time:              {total_time/60:.2f} minutes")
-    print(f"  Saved At:                {OUTPUT_FILE}")
+    print(f"  Saved At:                {output_file}")
     print("=" * 65, flush=True)
+
 
 if __name__ == '__main__':
     main()

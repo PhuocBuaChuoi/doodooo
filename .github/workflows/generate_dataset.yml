@@ -1,0 +1,57 @@
+name: Parallel Chess Dataset Generation
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  generate-dataset:
+    name: "Part ${{ matrix.part }}: Games ${{ matrix.skip }} -> ${{ matrix.skip + matrix.max }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: 1
+            skip: 530000
+            max: 25000
+            output: "v5_dataset_530k_555k.bin"
+          - part: 2
+            skip: 555000
+            max: 25000
+            output: "v5_dataset_555k_580k.bin"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install System Stockfish & Python Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq stockfish curl zstd
+          pip install zstandard chess requests
+
+      - name: Run Stockfish Generation (${{ matrix.skip }} to ${{ matrix.skip + matrix.max }})
+        run: |
+          python generate_circleci.py \
+            --skip-games ${{ matrix.skip }} \
+            --max-games ${{ matrix.max }} \
+            --output /tmp/${{ matrix.output }} \
+            --workers 4 \
+            --hash 64 \
+            --depth 10
+
+      - name: Upload Dataset Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: /tmp/${{ matrix.output }}
+          retention-days: 7
+          if-no-files-found: error
