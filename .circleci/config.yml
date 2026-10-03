@@ -1,0 +1,28 @@
+version: 2.1
+
+jobs:
+  generate-dataset:
+    docker:
+      - image: cimg/python:3.11
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Install Dependencies & Stockfish
+          command: |
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq stockfish curl zstd
+            pip install --quiet chess zstandard numpy
+      - run:
+          name: Run Chess Dataset Generation (530k -> 580k)
+          no_output_timeout: 3h
+          command: |
+            python generate_circleci.py
+      - store_artifacts:
+          path: /tmp/v5_dataset_530k_580k.bin
+          destination: dataset/v5_dataset_530k_580k.bin
+
+workflows:
+  build_dataset:
+    jobs:
+      - generate-dataset
