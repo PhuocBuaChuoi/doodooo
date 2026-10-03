@@ -7,7 +7,7 @@ on:
 
 jobs:
   generate-dataset:
-    name: "Part ${{ matrix.part }}: Games ${{ matrix.skip }} -> ${{ matrix.skip + matrix.max }}"
+    name: "Part ${{ matrix.part }} (${{ matrix.range }})"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -16,10 +16,12 @@ jobs:
           - part: 1
             skip: 530000
             max: 25000
+            range: "530k-555k"
             output: "v5_dataset_530k_555k.bin"
           - part: 2
             skip: 555000
             max: 25000
+            range: "555k-580k"
             output: "v5_dataset_555k_580k.bin"
 
     steps:
@@ -30,7 +32,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
       - name: Install System Stockfish & Python Dependencies
         run: |
@@ -38,7 +39,7 @@ jobs:
           sudo apt-get install -y -qq stockfish curl zstd
           pip install zstandard chess requests
 
-      - name: Run Stockfish Generation (${{ matrix.skip }} to ${{ matrix.skip + matrix.max }})
+      - name: Run Stockfish Generation
         run: |
           python generate_circleci.py \
             --skip-games ${{ matrix.skip }} \
